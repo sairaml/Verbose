@@ -1,5 +1,5 @@
 /**
-Added by Sagnik/Deloitte: Batch Apex to rollup Historic Sales, Customer Target, User Target data
+Added by Sagnik/Deloitte: Batch Apex to rollup Historic Sales, Customer Target, User Target 
 **/
 
 global class BatchforILICalculations_Manual implements Database.Batchable<sObject> {
