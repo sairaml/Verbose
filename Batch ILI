@@ -1,0 +1,187 @@
+/**
+Added by Sagnik/Deloitte: Batch Apex to rollup Historic Sales, Customer Target, User Target data
+**/
+
+global class BatchforILICalculations_Manual implements Database.Batchable<sObject> {
+            
+    public Date fromDate;
+    public Date toDate;
+    public Integer monthNo;
+    public Integer yearNo;
+    public Map<String, Id> mapOfUserDivMonthYearAndTargetIds = new Map<String, Id>();
+    public Map<String, Id> mapOfUserProdAndIds = new Map<String, Id>();
+    public Map<String, Id> mapOfSKUAndProd = new Map<String, Id>();   
+    
+    public BatchforILICalculations_Manual(Integer monthNo, Integer yearNo){
+        fromDate = Date.newInstance(yearNo, monthNo, 1);
+        toDate = fromDate.addMonths(1);
+        for (SKU_Product__c sku : [SELECT Id,Division__c FROM SKU_Product__c]){
+            mapOfSKUAndProd.put(sku.Id,sku.Division__c);
+        } 
+        for(User_Product__c up: [SELECT Id, User__c,Product__c 
+                                        FROM User_Product__c]){
+            mapOfUserProdAndIds.put(up.User__c +'-'+ up.Product__c, up.Id);
+        }
+        for(Target__c tar: [SELECT Id,Sales_User__c,Division__c,Start_Date__c, End_Date__c
+                                    FROM Target__c 
+                                    WHERE Start_Date__c >= :fromDate
+                                    AND Start_Date__c < :toDate]) {
+            mapOfUserDivMonthYearAndTargetIds.put(tar.Sales_User__c +'-'+ tar.Division__c +'-'+ tar.Start_Date__c.month() +'-'+ tar.Start_Date__c.year(), tar.Id);                            
+        }
+    }
+
+    global Database.Querylocator start(Database.BatchableContext bc) {
+        String query = 'SELECT Id FROM Account WHERE RecordType.Name = \'SAP Customer\'';        
+        return Database.getQueryLocator(query);
+    }
+
+    global void execute(Database.BatchableContext bc, List<sObject> sObjects) {
+        Map<String, List<Invoice_Line_Item__c>> mapOfCustDivMonthYearAndInvLIs = new Map<String, List<Invoice_Line_Item__c>>();
+        Map<String, List<Invoice_Line_Item__c>> mapOfCustSKUMonthYearAndInvLIs = new Map<String, List<Invoice_Line_Item__c>>();
+        Map<String, List<Invoice_Line_Item__c>> mapOfUserDivMonthYearAndInvLIs = new Map<String, List<Invoice_Line_Item__c>>();
+        Map<String, Id> mapOfCustSKUMonthYearAndHSIds = new Map<String, Id>();
+        Map<String, Id> mapOfCustDivMonthYearAndTargetIds = new Map<String, Id>();
+        Map<String, Id> mapOfCustProdAndIds = new Map<String, Id>();
+        Set<Id> setOfAccnts = (new Map<Id, sObject>(sObjects)).keySet();
+        for(Customer_Product__c cp: [SELECT Id,Customer__c,Product__c 
+                                        FROM Customer_Product__c 
+                                        WHERE Customer__c IN :setOfAccnts]){
+            mapOfCustProdAndIds.put(cp.Customer__c +'-'+ cp.Product__c, cp.Id);
+        }
+        for(Historic_Sales__c hs: [SELECT Id,Customer__c,SKU_Product__c,Invoice_Month__c,Invoice_Year__c,Quantity__c,Invoice_Total_Amount__c,
+                                            FOC_Quantity__c,Returned_Quantity__c,Returned_Amount__c,Returned_FOC_Quantity__c, Month__c 
+                                    FROM Historic_Sales__c 
+                                    WHERE Customer__c IN :setOfAccnts 
+                                    AND Month__c >= :fromDate
+                                    AND Month__c < :toDate]) {
+            mapOfCustSKUMonthYearAndHSIds.put(hs.Customer__c +'-'+ hs.SKU_Product__c +'-'+ hs.Month__c.month() +'-'+ hs.Month__c.year(), hs.Id);                            
+        }
+        for(Cust_Target__c csttar: [SELECT Id, Customer__c, Product__c,Start_Date__c, End_Date__c
+                                    FROM Cust_Target__c 
+                                    WHERE Customer__c IN :setOfAccnts 
+                                    AND Start_Date__c >= :fromDate
+                                    AND Start_Date__c < :toDate]) {
+            mapOfCustDivMonthYearAndTargetIds.put(csttar.Customer__c +'-'+ csttar.Product__c +'-'+ csttar.Start_Date__c.month() +'-'+ csttar.Start_Date__c.year(), csttar.Id);                            
+        }
+        for(Invoice_Line_Item__c ili : [SELECT Calculated_Amount__c, Calc_Quantity__c, Product_Division__c, SKU_Product__c, SKU_Product__r.Product_Sub_Division__c, Invoice_Date__c, Customer__c, Invoice__r.Sales_User__c, Item_Category__c
+                                            FROM Invoice_Line_Item__c
+                                            WHERE Customer__c IN :setOfAccnts
+                                            AND Product_Division__c != NULL
+                                            AND Cancelled_Invoice__c = FALSE
+                                            AND Invoice_Date__c >= :fromDate
+                                            AND Invoice_Date__c < :toDate]) {
+            if(!mapOfCustDivMonthYearAndInvLIs.containsKey(ili.Customer__c +'-'+ ili.Product_Division__c +'-'+ ili.Invoice_Date__c.month() +'-'+ ili.Invoice_Date__c.year()))
+                mapOfCustDivMonthYearAndInvLIs.put(ili.Customer__c +'-'+ ili.Product_Division__c +'-'+ ili.Invoice_Date__c.month() +'-'+ ili.Invoice_Date__c.year(), new List<Invoice_Line_Item__c>());
+            mapOfCustDivMonthYearAndInvLIs.get(ili.Customer__c +'-'+ ili.Product_Division__c +'-'+ ili.Invoice_Date__c.month() +'-'+ ili.Invoice_Date__c.year()).add(ili);
+            if(!mapOfCustSKUMonthYearAndInvLIs.containsKey(ili.Customer__c +'-'+ ili.SKU_Product__c +'-'+ ili.Invoice_Date__c.month() +'-'+ ili.Invoice_Date__c.year()))
+                mapOfCustSKUMonthYearAndInvLIs.put(ili.Customer__c +'-'+ ili.SKU_Product__c +'-'+ ili.Invoice_Date__c.month() +'-'+ ili.Invoice_Date__c.year(), new List<Invoice_Line_Item__c>());
+            mapOfCustSKUMonthYearAndInvLIs.get(ili.Customer__c +'-'+ ili.SKU_Product__c +'-'+ ili.Invoice_Date__c.month() +'-'+ ili.Invoice_Date__c.year()).add(ili);
+            if (ili.Invoice__r.Sales_User__c != NULL) {
+                if(!mapOfUserDivMonthYearAndInvLIs.containsKey(ili.Invoice__r.Sales_User__c +'-'+ ili.Product_Division__c +'-'+ ili.Invoice_Date__c.month() +'-'+ ili.Invoice_Date__c.year()))
+                    mapOfUserDivMonthYearAndInvLIs.put(ili.Invoice__r.Sales_User__c +'-'+ ili.Product_Division__c +'-'+ ili.Invoice_Date__c.month() +'-'+ ili.Invoice_Date__c.year(), new List<Invoice_Line_Item__c>());
+                mapOfUserDivMonthYearAndInvLIs.get(ili.Invoice__r.Sales_User__c +'-'+ ili.Product_Division__c +'-'+ ili.Invoice_Date__c.month() +'-'+ ili.Invoice_Date__c.year()).add(ili);
+            }
+        }
+        List<Cust_Target__c> lstCustTargettoUpsert = new List<Cust_Target__c>();
+        for(String key: mapOfCustDivMonthYearAndInvLIs.keySet()) {
+            List<String> lstOfCustDivMonthYear = key.split('-');
+            Id custId = lstOfCustDivMonthYear[0];
+            Id divId = lstOfCustDivMonthYear[1];
+            String month = lstOfCustDivMonthYear[2];
+            String year = lstOfCustDivMonthYear[3];
+            Decimal TotalAmount = 0;
+            for(Invoice_Line_Item__c ili: mapOfCustDivMonthYearAndInvLIs.get(key)) {
+                TotalAmount += ili.Calculated_Amount__c;
+            }
+            Cust_Target__c csttar = new Cust_Target__c();
+            if(mapOfCustDivMonthYearAndTargetIds.containsKey(key)) {
+                csttar.Id = mapOfCustDivMonthYearAndTargetIds.get(key);
+            }
+            csttar.Customer__c = custId;
+            csttar.Product__c = divId;
+            csttar.Achievement__c = TotalAmount;
+            csttar.Start_Date__c = Date.newInstance(Integer.valueOf(year), Integer.valueOf(month), 1);
+            lstCustTargettoUpsert.add(csttar);
+        }
+        Database.upsert(lstCustTargettoUpsert, false);
+        List<Target__c> lstTargettoUpsert = new List<Target__c>();
+        for(String key: mapOfUserDivMonthYearAndInvLIs.keySet()) {
+            List<String> lstOfUserDivMonthYear = key.split('-');
+            Id userId = lstOfUserDivMonthYear[0];
+            Id divId = lstOfUserDivMonthYear[1];
+            String month = lstOfUserDivMonthYear[2];
+            String year = lstOfUserDivMonthYear[3];
+            Decimal TotalAmount = 0;
+            for(Invoice_Line_Item__c ili: mapOfUserDivMonthYearAndInvLIs.get(key)) {
+                TotalAmount += ili.Calculated_Amount__c;
+            }
+            Target__c tar = new Target__c();
+            if(mapOfUserDivMonthYearAndTargetIds.containsKey(key)) {
+                tar.Id = mapOfUserDivMonthYearAndTargetIds.get(key);
+            }
+            if(mapOfUserProdAndIds.containsKey(userId +'-'+ divId)) {
+                tar.User_Product__c = mapOfUserProdAndIds.get(userId +'-'+ divId);
+            }
+            tar.Sales_User__c = userId;
+            tar.Division__c = divId;
+            tar.Achievement__c = TotalAmount;
+            tar.Start_Date__c = Date.newInstance(Integer.valueOf(year), Integer.valueOf(month), 1);
+            lstTargettoUpsert.add(tar);
+        }
+        Database.upsert(lstTargettoUpsert, false);
+        List<Historic_Sales__c> lstHStoUpsert = new List<Historic_Sales__c>();
+        for(String key: mapOfCustSKUMonthYearAndInvLIs.keySet()) {
+            List<String> lstOfCustSKUMonthYear = key.split('-');
+            Id custId = lstOfCustSKUMonthYear[0];
+            Id skuId = lstOfCustSKUMonthYear[1];
+            String month = lstOfCustSKUMonthYear[2];
+            String year = lstOfCustSKUMonthYear[3];
+            Id divId = mapOfSKUAndProd.get(skuId);
+            Decimal Quantity = 0;
+            Decimal FOCQuantity = 0;
+            Decimal ReturnedQuantity = 0;
+            Decimal ReturnedFOCQuantity = 0;
+            Decimal ReturnedAmount = 0;
+            Decimal TotalAmount = 0;
+            for(Invoice_Line_Item__c ili: mapOfCustSKUMonthYearAndInvLIs.get(key)) {
+                if(ili.Item_Category__c == 'ZFRE' || ili.Item_Category__c == 'TANN')
+                    FOCQuantity += ili.Calc_Quantity__c;
+                if(ili.Item_Category__c == 'ZREN' || ili.Item_Category__c == 'KRN') {
+                    ReturnedQuantity += ili.Calc_Quantity__c;
+                    ReturnedAmount += ili.Calculated_Amount__c;
+                }
+                if(ili.Item_Category__c == 'ZRNR')    
+                    ReturnedFOCQuantity += ili.Calc_Quantity__c;
+                if(ili.Item_Category__c == 'TAN' || ili.Item_Category__c == 'ZTAN' || ili.Item_Category__c == 'L2N' || 
+                    ili.Item_Category__c == 'G2N' || ili.Item_Category__c == 'KEN') {
+                    Quantity += ili.Calc_Quantity__c;
+                    TotalAmount += ili.Calculated_Amount__c;                    
+                }
+            }
+            Historic_Sales__c hs = new Historic_Sales__c();
+            if(mapOfCustSKUMonthYearAndHSIds.containsKey(key)) {
+                hs.Id = mapOfCustSKUMonthYearAndHSIds.get(key);
+            }
+            if(mapOfCustProdAndIds.containsKey(custId +'-'+ divId)) {
+                hs.Customer_Product__c = mapOfCustProdAndIds.get(custId +'-'+ divId);
+            }
+            hs.Customer__c = custId;
+            hs.SKU_Product__c = skuId;
+            hs.Invoice_Month__c = month;
+            hs.Invoice_Year__c = year; 
+            hs.Quantity__c = Quantity;
+            hs.Invoice_Total_Amount__c = TotalAmount;
+            hs.Returned_FOC_Quantity__c = ReturnedFOCQuantity;
+            hs.Returned_Quantity__c = ReturnedQuantity;
+            hs.Returned_Amount__c = ReturnedAmount;
+            hs.FOC_Quantity__c = FOCQuantity;
+            lstHStoUpsert.add(hs);
+        }
+        Database.upsert(lstHStoUpsert, false);
+    }
+
+    global void finish(Database.BatchableContext bc) {
+        
+    }
+}
+
